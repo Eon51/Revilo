@@ -1,0 +1,11 @@
+{
+  "name": "Révilo",
+  "short_name": "Révilo",
+  "description": "Planificateur de révisions pour étudiants",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F7F8FC",
+  "theme_color": "#6657F4",
+  "orientation": "portrait-primary",
+  "lang": "fr"
+}
