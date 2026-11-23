@@ -20,13 +20,17 @@ export default function Layout() {
         theme.content = '#6657F4';
         document.head.appendChild(theme);
       }
-      navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+      navigator.serviceWorker.register('/sw.js').catch((error: unknown) => {
+        console.error('Impossible d’activer le mode hors ligne de Révilo.', error);
+      });
     }
   }, []);
 
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />
+      <Stack.Screen name="confidentialite" />
+      <Stack.Screen name="mentions-legales" />
     </Stack>
   );
 }

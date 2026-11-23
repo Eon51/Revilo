@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { Availability, Exam, generatePlan, PlannedSession } from '../planner';
+import { Availability, Exam, generatePlan, isValidDateKey, PlannedSession } from '../planner';
 import { ReviewState } from '../review';
 
 export type SubjectRecord = {
@@ -40,6 +40,7 @@ export type SessionView = SessionRecord & {
   examTitle: string;
   subjectName: string;
   subjectColor: string;
+  deckTitle: string | null;
 };
 
 export type DeckRecord = {
@@ -57,6 +58,15 @@ export type CardRecord = {
   back: string;
   created_at: string;
 };
+
+function todayDateKey(): string {
+  const today = new Date();
+  return [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, '0'),
+    String(today.getDate()).padStart(2, '0'),
+  ].join('-');
+}
 
 function getClient() {
   if (!supabase) {
@@ -86,11 +96,14 @@ export async function listSubjects(): Promise<SubjectRecord[]> {
 }
 
 export async function createSubject(name: string, color = '#6657F4'): Promise<SubjectRecord> {
+  const trimmedName = name.trim();
+  if (!trimmedName) throw new Error('Indique le nom du cours.');
+  if (trimmedName.length > 60) throw new Error('Le nom du cours ne peut pas dépasser 60 caractères.');
   const client = getClient();
   const userId = await getUserId();
   const { data, error } = await client
     .from('subjects')
-    .insert({ user_id: userId, name: name.trim(), color })
+    .insert({ user_id: userId, name: trimmedName, color })
     .select('id,name,color,created_at')
     .single();
   if (error) throw error;
@@ -103,6 +116,19 @@ export async function deleteSubject(subjectId: string): Promise<void> {
   const { error } = await client
     .from('subjects')
     .delete()
+    .eq('user_id', userId)
+    .eq('id', subjectId);
+  if (error) throw error;
+}
+
+export async function renameSubject(subjectId: string, name: string): Promise<void> {
+  const trimmedName = name.trim();
+  if (!trimmedName) throw new Error('Indique le nom du cours.');
+  if (trimmedName.length > 60) throw new Error('Le nom du cours ne peut pas dépasser 60 caractères.');
+  const userId = await getUserId();
+  const { error } = await getClient()
+    .from('subjects')
+    .update({ name: trimmedName })
     .eq('user_id', userId)
     .eq('id', subjectId);
   if (error) throw error;
@@ -125,6 +151,14 @@ export async function createExam(
   title: string,
   examDate: string
 ): Promise<ExamRecord> {
+  const trimmedTitle = title.trim();
+  if (!subjectId) throw new Error('Choisis un cours pour ce contrôle.');
+  if (!trimmedTitle) throw new Error('Indique le nom du contrôle.');
+  if (trimmedTitle.length > 120) throw new Error('Le nom du contrôle ne peut pas dépasser 120 caractères.');
+  if (!isValidDateKey(examDate)) throw new Error('La date doit respecter le format AAAA-MM-JJ.');
+  if (examDate < todayDateKey()) {
+    throw new Error('La date du contrôle ne peut pas être passée.');
+  }
   const client = getClient();
   const userId = await getUserId();
   const { data, error } = await client
@@ -132,13 +166,44 @@ export async function createExam(
     .insert({
       user_id: userId,
       subject_id: subjectId,
-      title: title.trim(),
+      title: trimmedTitle,
       exam_date: examDate,
     })
     .select('id,subject_id,title,exam_date,coefficient')
     .single();
   if (error) throw error;
   return data;
+}
+
+export async function updateExam(
+  examId: string,
+  subjectId: string,
+  title: string,
+  examDate: string
+): Promise<void> {
+  if (!subjectId) throw new Error('Choisis un cours pour ce contrôle.');
+  const trimmedTitle = title.trim();
+  if (!trimmedTitle) throw new Error('Indique le nom du contrôle.');
+  if (trimmedTitle.length > 120) throw new Error('Le nom du contrôle ne peut pas dépasser 120 caractères.');
+  if (!isValidDateKey(examDate)) throw new Error('La date doit respecter le format AAAA-MM-JJ.');
+  if (examDate < todayDateKey()) throw new Error('La date du contrôle ne peut pas être passée.');
+  const userId = await getUserId();
+  const { error } = await getClient()
+    .from('exams')
+    .update({ subject_id: subjectId, title: trimmedTitle, exam_date: examDate })
+    .eq('user_id', userId)
+    .eq('id', examId);
+  if (error) throw error;
+}
+
+export async function deleteExam(examId: string): Promise<void> {
+  const userId = await getUserId();
+  const { error } = await getClient()
+    .from('exams')
+    .delete()
+    .eq('user_id', userId)
+    .eq('id', examId);
+  if (error) throw error;
 }
 
 export async function listChapters(examIds: string[]): Promise<ChapterRecord[]> {
@@ -157,13 +222,26 @@ export async function createChapter(
   title: string,
   difficulty: 1 | 2 | 3
 ): Promise<ChapterRecord> {
+  const trimmedTitle = title.trim();
+  if (!examId) throw new Error('Choisis un contrôle pour ce chapitre.');
+  if (!trimmedTitle) throw new Error('Indique le nom du chapitre.');
+  if (trimmedTitle.length > 120) throw new Error('Le nom du chapitre ne peut pas dépasser 120 caractères.');
+  if (![1, 2, 3].includes(difficulty)) throw new Error('Choisis un niveau de difficulté valide.');
   const { data, error } = await getClient()
     .from('chapters')
-    .insert({ exam_id: examId, title: title.trim(), difficulty })
+    .insert({ exam_id: examId, title: trimmedTitle, difficulty })
     .select('id,exam_id,title,difficulty,status')
     .single();
   if (error) throw error;
   return data;
+}
+
+export async function deleteChapter(chapterId: string): Promise<void> {
+  const { error } = await getClient()
+    .from('chapters')
+    .delete()
+    .eq('id', chapterId);
+  if (error) throw error;
 }
 
 export async function listAvailability(): Promise<Availability> {
@@ -181,7 +259,7 @@ export async function saveAvailability(availability: Availability): Promise<void
   const rows = Array.from({ length: 7 }, (_, weekday) => ({
     user_id: userId,
     weekday,
-    minutes: Math.max(0, Math.floor(availability[weekday] ?? 0)),
+    minutes: Math.min(1440, Math.max(0, Math.floor(availability[weekday] ?? 0))),
   }));
   const { error } = await getClient()
     .from('availabilities')
@@ -201,6 +279,7 @@ export async function listBlockedDays(): Promise<string[]> {
 }
 
 export async function setBlockedDay(date: string, blocked: boolean): Promise<void> {
+  if (!isValidDateKey(date)) throw new Error('La date bloquée doit respecter le format AAAA-MM-JJ.');
   const userId = await getUserId();
   const query = getClient().from('blocked_days');
   const result = blocked
@@ -218,6 +297,13 @@ export async function generateAndSavePlan(): Promise<PlannedSession[]> {
     listBlockedDays(),
   ]);
   const chapters = await listChapters(exams.map((exam) => exam.id));
+  const decks = await listDecks();
+  const decksForChapters = decks.filter(
+    (deck): deck is DeckRecord & { chapter_id: string } => deck.chapter_id !== null
+  );
+  const deckByChapter = new Map<string, string>(
+    decksForChapters.map((deck): [string, string] => [deck.chapter_id, deck.id])
+  );
   const planInput: Exam[] = exams.map((exam) => ({
     id: exam.id,
     date: exam.exam_date,
@@ -234,6 +320,7 @@ export async function generateAndSavePlan(): Promise<PlannedSession[]> {
       .insert(plan.map((session) => ({
         user_id: userId,
         chapter_id: session.chapterId,
+        deck_id: deckByChapter.get(session.chapterId) ?? null,
         session_date: session.date,
         duration: session.duration,
         status: 'planned',
@@ -248,15 +335,15 @@ export async function generateAndSavePlan(): Promise<PlannedSession[]> {
     }
   }
 
-  if (newIds.length > 0) {
-    const { error: cleanupError } = await client
-      .from('sessions')
-      .delete()
-      .eq('user_id', userId)
-      .eq('status', 'planned')
-      .not('id', 'in', `(${newIds.join(',')})`);
-    if (cleanupError) throw cleanupError;
-  }
+  const cleanupQuery = client
+    .from('sessions')
+    .delete()
+    .eq('user_id', userId)
+    .eq('status', 'planned');
+  const { error: cleanupError } = newIds.length > 0
+    ? await cleanupQuery.not('id', 'in', `(${newIds.join(',')})`)
+    : await cleanupQuery;
+  if (cleanupError) throw cleanupError;
 
   return plan;
 }
@@ -273,10 +360,11 @@ export async function listSessions(): Promise<SessionRecord[]> {
 }
 
 export async function listSessionViews(): Promise<SessionView[]> {
-  const [sessions, exams, subjects] = await Promise.all([
+  const [sessions, exams, subjects, decks] = await Promise.all([
     listSessions(),
     listExams(),
     listSubjects(),
+    listDecks(),
   ]);
   const chapters = await listChapters(
     Array.from(new Set(exams.map((exam) => exam.id)))
@@ -284,6 +372,7 @@ export async function listSessionViews(): Promise<SessionView[]> {
   const examById = new Map(exams.map((exam) => [exam.id, exam]));
   const subjectById = new Map(subjects.map((subject) => [subject.id, subject]));
   const chapterById = new Map(chapters.map((chapter) => [chapter.id, chapter]));
+  const deckById = new Map(decks.map((deck) => [deck.id, deck]));
 
   return sessions.map((session) => {
     const chapter = session.chapter_id ? chapterById.get(session.chapter_id) : undefined;
@@ -291,10 +380,12 @@ export async function listSessionViews(): Promise<SessionView[]> {
     const subject = exam?.subject_id ? subjectById.get(exam.subject_id) : undefined;
     return {
       ...session,
+      deck_id: session.deck_id && deckById.has(session.deck_id) ? session.deck_id : null,
       chapterTitle: chapter?.title ?? 'Révision',
       examTitle: exam?.title ?? '',
       subjectName: subject?.name ?? 'Révision',
       subjectColor: subject?.color ?? '#6657F4',
+      deckTitle: session.deck_id ? deckById.get(session.deck_id)?.title ?? null : null,
     };
   });
 }
@@ -323,11 +414,19 @@ export async function listDecks(): Promise<DeckRecord[]> {
   return data ?? [];
 }
 
-export async function createDeck(title: string, subjectId?: string): Promise<DeckRecord> {
+export async function createDeck(title: string, subjectId?: string, chapterId?: string): Promise<DeckRecord> {
+  const trimmedTitle = title.trim();
+  if (!trimmedTitle) throw new Error('Indique le nom du paquet.');
+  if (trimmedTitle.length > 80) throw new Error('Le nom du paquet ne peut pas dépasser 80 caractères.');
   const userId = await getUserId();
   const { data, error } = await getClient()
     .from('decks')
-    .insert({ user_id: userId, title: title.trim(), subject_id: subjectId ?? null })
+    .insert({
+      user_id: userId,
+      title: trimmedTitle,
+      subject_id: subjectId ?? null,
+      chapter_id: chapterId ?? null,
+    })
     .select('id,title,subject_id,chapter_id,created_at')
     .single();
   if (error) throw error;
@@ -335,10 +434,13 @@ export async function createDeck(title: string, subjectId?: string): Promise<Dec
 }
 
 export async function renameDeck(deckId: string, title: string): Promise<void> {
+  const trimmedTitle = title.trim();
+  if (!trimmedTitle) throw new Error('Indique le nom du paquet.');
+  if (trimmedTitle.length > 80) throw new Error('Le nom du paquet ne peut pas dépasser 80 caractères.');
   const userId = await getUserId();
   const { error } = await getClient()
     .from('decks')
-    .update({ title: title.trim() })
+    .update({ title: trimmedTitle })
     .eq('id', deckId)
     .eq('user_id', userId);
   if (error) throw error;
@@ -346,6 +448,12 @@ export async function renameDeck(deckId: string, title: string): Promise<void> {
 
 export async function deleteDeck(deckId: string): Promise<void> {
   const userId = await getUserId();
+  const { error: sessionError } = await getClient()
+    .from('sessions')
+    .update({ deck_id: null })
+    .eq('user_id', userId)
+    .eq('deck_id', deckId);
+  if (sessionError) throw sessionError;
   const { error } = await getClient()
     .from('decks')
     .delete()
@@ -364,11 +472,26 @@ export async function listCards(deckId: string): Promise<CardRecord[]> {
   return data ?? [];
 }
 
+export async function deleteCard(cardId: string): Promise<void> {
+  const { error } = await getClient()
+    .from('cards')
+    .delete()
+    .eq('id', cardId);
+  if (error) throw error;
+}
+
 export async function addCards(
   deckId: string,
   cards: { front: string; back: string }[]
 ): Promise<CardRecord[]> {
   if (cards.length === 0) return [];
+  if (!deckId) throw new Error('Choisis un paquet avant d’ajouter des cartes.');
+  if (cards.some((card) => !card.front.trim() || !card.back.trim())) {
+    throw new Error('Chaque carte doit avoir un recto et un verso.');
+  }
+  if (cards.some((card) => card.front.trim().length > 2000 || card.back.trim().length > 2000)) {
+    throw new Error('Le recto et le verso sont limités à 2 000 caractères.');
+  }
   const { data, error } = await getClient()
     .from('cards')
     .insert(cards.map((card) => ({
